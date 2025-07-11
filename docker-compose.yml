@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  clipsai:
+    build: .
+    container_name: aiClipClaude
+    environment:
+      # UnRAID permission handling
+      - PUID=99
+      - PGID=100
+      # HuggingFace token for Pyannote (optional but recommended)
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+      # Gradio settings
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=4444
+    ports:
+      - "4444:4444"
+    volumes:
+      # Input directory for source videos
+      - ${INPUT_DIR:-./input}:/input
+      # Output directory for processed clips
+      - ${OUTPUT_DIR:-./output}:/output
+      # Cache directory for transcriptions and models
+      - ${CACHE_DIR:-./cache}:/cache
+      # Models directory for ML models
+      - ${MODELS_DIR:-./models}:/models
+    restart: unless-stopped
+    # Resource limits (adjust based on your system)
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
