@@ -1,0 +1,15 @@
+# Web interface specific requirements
+gradio==4.19.2
+python-multipart==0.0.6
+aiofiles==23.2.1
+asyncio-throttle==1.0.2
+python-dotenv==1.0.0
+
+# Additional dependencies for ClipsAI functionality
+moviepy==1.0.3
+pydub==0.25.1
+webrtcvad==2.0.10
+srt==3.5.3
+
+# For better error handling and logging
+colorlog==6.8.0
