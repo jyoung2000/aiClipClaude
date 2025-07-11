@@ -1,7 +1,6 @@
 import gradio as gr
 import os
 import sys
-import asyncio
 import logging
 import json
 import shutil
@@ -11,18 +10,27 @@ import tempfile
 from datetime import datetime
 import threading
 import queue
+import time
+import subprocess
 
 # Add ClipsAI to path
 sys.path.insert(0, '/app/clipsai_source')
 
 # Import ClipsAI modules
 try:
-    from clipsai import ClipFinder, Transcriber, resize
+    from clipsai import ClipFinder, Transcriber
     from clipsai.media.editor import MediaEditor
-    from clipsai.utils.utils import Utils
 except ImportError as e:
     logging.error(f"Failed to import ClipsAI modules: {e}")
-    raise
+    # Try alternative import
+    try:
+        import clipsai
+        ClipFinder = clipsai.ClipFinder
+        Transcriber = clipsai.Transcriber
+        from clipsai.media.editor import MediaEditor
+    except ImportError as e2:
+        logging.error(f"Alternative import also failed: {e2}")
+        raise
 
 # Configure logging
 logging.basicConfig(
@@ -66,11 +74,12 @@ class VideoProcessor:
                 
             transcription = self.transcriber.transcribe(
                 media_file_path=video_path,
-                high_precision=False
+                device="cpu",  # Force CPU for compatibility
+                compute_type="int8"  # Use int8 for CPU efficiency
             )
             
             if log_callback:
-                log_callback(f"Transcription complete. Found {len(transcription.segments)} segments")
+                log_callback(f"Transcription complete.")
             
             # Step 2: Find clips
             if progress_callback:
@@ -80,20 +89,22 @@ class VideoProcessor:
                 
             clips = self.clip_finder.find_clips(
                 transcription=transcription,
-                min_clip_duration=15,
-                max_clip_duration=120,
-                target_clips=num_clips
+                min_clip_duration=15.0,
+                max_clip_duration=120.0
             )
+            
+            # Sort clips by score and take top N
+            clips = sorted(clips, key=lambda x: x.score if hasattr(x, 'score') else 0, reverse=True)[:num_clips]
             
             if log_callback:
                 log_callback(f"Found {len(clips)} clips")
             
             # Step 3: Extract and process clips
             output_files = []
-            for idx, clip in enumerate(clips[:num_clips]):
+            for idx, clip in enumerate(clips):
                 if progress_callback:
-                    progress = 0.4 + (0.5 * (idx / num_clips))
-                    progress_callback(progress, f"Processing clip {idx + 1}/{num_clips}")
+                    progress = 0.4 + (0.5 * (idx / len(clips)))
+                    progress_callback(progress, f"Processing clip {idx + 1}/{len(clips)}")
                 
                 if log_callback:
                     log_callback(f"Extracting clip {idx + 1}: {clip.start_time:.1f}s - {clip.end_time:.1f}s")
@@ -102,16 +113,38 @@ class VideoProcessor:
                 output_filename = f"clip_{idx + 1:03d}.mp4"
                 output_path = os.path.join(output_dir, output_filename)
                 
-                # Extract clip
-                self.media_editor.trim_media(
-                    media_file_path=video_path,
-                    start_time=clip.start_time,
-                    end_time=clip.end_time,
-                    output_path=output_path
-                )
+                # Extract clip using ffmpeg directly for better control
+                cmd = [
+                    'ffmpeg', '-i', video_path,
+                    '-ss', str(clip.start_time),
+                    '-t', str(clip.end_time - clip.start_time),
+                    '-c', 'copy',  # Copy codec for faster processing
+                    '-avoid_negative_ts', 'make_zero',
+                    output_path,
+                    '-y'  # Overwrite output
+                ]
+                
+                try:
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as e:
+                    if log_callback:
+                        log_callback(f"Warning: Fast copy failed, trying re-encode for clip {idx + 1}")
+                    # Fallback to re-encoding
+                    cmd = [
+                        'ffmpeg', '-i', video_path,
+                        '-ss', str(clip.start_time),
+                        '-t', str(clip.end_time - clip.start_time),
+                        '-c:v', 'libx264',
+                        '-preset', 'fast',
+                        '-crf', '23',
+                        '-c:a', 'aac',
+                        output_path,
+                        '-y'
+                    ]
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
                 
                 # Add subtitles if requested
-                if add_subtitles and clip.transcript:
+                if add_subtitles and hasattr(clip, 'transcript') and clip.transcript:
                     if log_callback:
                         log_callback(f"Adding subtitles to clip {idx + 1}")
                     
@@ -121,15 +154,27 @@ class VideoProcessor:
                     
                     # Burn subtitles into video
                     temp_output = output_path.replace('.mp4', '_sub.mp4')
-                    self.media_editor.add_subtitles(
-                        video_path=output_path,
-                        srt_path=srt_path,
-                        output_path=temp_output
-                    )
+                    cmd = [
+                        'ffmpeg', '-i', output_path, '-vf',
+                        f"subtitles={srt_path}:force_style='FontSize=24,Outline=1'",
+                        '-c:a', 'copy',
+                        temp_output,
+                        '-y'
+                    ]
                     
-                    # Replace original with subtitled version
-                    os.replace(temp_output, output_path)
-                    os.remove(srt_path)
+                    try:
+                        subprocess.run(cmd, check=True, capture_output=True, text=True)
+                        # Replace original with subtitled version
+                        os.replace(temp_output, output_path)
+                        os.remove(srt_path)
+                    except Exception as e:
+                        if log_callback:
+                            log_callback(f"Warning: Could not add subtitles to clip {idx + 1}: {str(e)}")
+                        # Clean up temp files if they exist
+                        if os.path.exists(temp_output):
+                            os.remove(temp_output)
+                        if os.path.exists(srt_path):
+                            os.remove(srt_path)
                 
                 output_files.append(output_path)
                 
@@ -153,10 +198,18 @@ class VideoProcessor:
     def _create_srt_file(self, clip, srt_path: str):
         """Create SRT subtitle file from clip transcript"""
         with open(srt_path, 'w', encoding='utf-8') as f:
+            # Adjust timestamps relative to clip start
+            clip_start = clip.start_time
+            
             for i, segment in enumerate(clip.transcript.segments):
-                f.write(f"{i + 1}\n")
-                f.write(f"{self._format_time(segment.start_time)} --> {self._format_time(segment.end_time)}\n")
-                f.write(f"{segment.text}\n\n")
+                # Calculate relative timestamps
+                start = max(0, segment.start - clip_start)
+                end = min(clip.end_time - clip_start, segment.end - clip_start)
+                
+                if start < end:  # Only write if segment is within clip bounds
+                    f.write(f"{i + 1}\n")
+                    f.write(f"{self._format_time(start)} --> {self._format_time(end)}\n")
+                    f.write(f"{segment.text.strip()}\n\n")
     
     def _format_time(self, seconds: float) -> str:
         """Format time for SRT file"""
@@ -222,6 +275,8 @@ def create_interface():
             # 🎬 ClipsAI Web Interface
             
             Upload a video and automatically extract the best clips!
+            
+            **Note:** Processing may take several minutes depending on video length.
             """
         )
         
@@ -253,7 +308,6 @@ def create_interface():
             with gr.Column(scale=1):
                 # Progress section
                 gr.Markdown("### Processing Status")
-                progress_bar = gr.Progress()
                 status_text = gr.Textbox(
                     label="Status",
                     value="Ready to process",
@@ -392,6 +446,7 @@ if __name__ == "__main__":
     hf_token = os.environ.get("HUGGINGFACE_TOKEN", "")
     if hf_token:
         logger.info("HuggingFace token found")
+        os.environ["HF_TOKEN"] = hf_token
     else:
         logger.warning("No HuggingFace token found. Some features may be limited.")
     
