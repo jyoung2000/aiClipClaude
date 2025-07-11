@@ -1,33 +1,13 @@
-# Multi-stage build for ClipsAI with Web GUI
-FROM python:3.11-slim as builder
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install poetry for dependency management
-RUN pip install poetry
-
-# Copy ClipsAI source
-WORKDIR /build
-RUN git clone https://github.com/ClipsAI/clipsai.git .
-
-# Install ClipsAI dependencies
-RUN poetry config virtualenvs.create false
-RUN poetry install --no-dev
-
-# Final stage
+# ClipsAI Docker container with Web GUI
 FROM python:3.11-slim
 
-# Install runtime dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
     gosu \
     curl \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user and directories
@@ -37,33 +17,39 @@ RUN useradd -m -u 1000 -s /bin/bash appuser
 RUN mkdir -p /app /input /output /cache /models && \
     chown -R appuser:appuser /app /input /output /cache /models
 
-# Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# Copy ClipsAI source
-COPY --from=builder /build /app/clipsai_source
-
 WORKDIR /app
 
-# Install additional dependencies for web GUI and CPU-only PyTorch
+# Install CPU-only PyTorch first
+RUN pip install --no-cache-dir \
+    torch==2.1.2+cpu \
+    torchvision==0.16.2+cpu \
+    torchaudio==2.1.2+cpu \
+    -f https://download.pytorch.org/whl/torch_stable.html
+
+# Clone and install ClipsAI
+RUN git clone https://github.com/ClipsAI/clipsai.git /app/clipsai_source && \
+    cd /app/clipsai_source && \
+    pip install --no-cache-dir -e .
+
+# Install WhisperX separately (required dependency)
+RUN pip install --no-cache-dir git+https://github.com/m-bain/whisperx.git
+
+# Install additional dependencies for web GUI
 RUN pip install --no-cache-dir \
     gradio==4.19.2 \
-    torch==2.1.2+cpu torchvision==0.16.2+cpu torchaudio==2.1.2+cpu -f https://download.pytorch.org/whl/torch_stable.html \
-    whisperx@git+https://github.com/m-bain/whisperx.git \
     pyannote.audio \
     python-multipart \
     aiofiles \
-    asyncio \
-    python-dotenv
+    python-dotenv \
+    moviepy==1.0.3 \
+    pydub==0.25.1 \
+    webrtcvad==2.0.10 \
+    srt==3.5.3 \
+    colorlog==6.8.0
 
 # Copy application files
 COPY web_app.py /app/
 COPY entrypoint.sh /app/
-COPY requirements-web.txt /app/
-
-# Install web-specific requirements
-RUN pip install --no-cache-dir -r requirements-web.txt
 
 # Make entrypoint executable
 RUN chmod +x /app/entrypoint.sh
