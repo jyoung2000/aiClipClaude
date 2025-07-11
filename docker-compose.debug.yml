@@ -1,0 +1,13 @@
+services:
+  clipsai-debug:
+    build: .
+    container_name: aiClipClaude-debug
+    environment:
+      # UnRAID permission handling
+      - PUID=99
+      - PGID=100
+    volumes:
+      - ./debug-startup.sh:/app/debug-startup.sh:ro
+    command: ["/bin/bash", "/app/debug-startup.sh"]
+    # Don't restart on failure so we can see the output
+    restart: "no"
