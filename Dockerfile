@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     gosu \
     curl \
     build-essential \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user and directories
@@ -26,12 +27,15 @@ RUN pip install --no-cache-dir \
     torchaudio==2.1.2+cpu \
     -f https://download.pytorch.org/whl/torch_stable.html
 
+# Install sentence-transformers for BERT embeddings
+RUN pip install --no-cache-dir sentence-transformers
+
 # Clone and install ClipsAI
 RUN git clone https://github.com/ClipsAI/clipsai.git /app/clipsai_source && \
     cd /app/clipsai_source && \
     pip install --no-cache-dir -e .
 
-# Install WhisperX separately (required dependency)
+# Install WhisperX with its dependencies
 RUN pip install --no-cache-dir git+https://github.com/m-bain/whisperx.git
 
 # Install additional dependencies for web GUI
@@ -45,7 +49,8 @@ RUN pip install --no-cache-dir \
     pydub==0.25.1 \
     webrtcvad==2.0.10 \
     srt==3.5.3 \
-    colorlog==6.8.0
+    colorlog==6.8.0 \
+    faster-whisper
 
 # Copy application files
 COPY web_app.py /app/
@@ -61,6 +66,7 @@ ENV GRADIO_SERVER_PORT=4444
 ENV TORCH_HOME=/models
 ENV HF_HOME=/models
 ENV TRANSFORMERS_CACHE=/models
+ENV TOKENIZERS_PARALLELISM=false
 
 # Expose port
 EXPOSE 4444
