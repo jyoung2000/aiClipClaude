@@ -121,15 +121,26 @@ docker build -t aiclip-claude .
 
 ## Troubleshooting
 
-### Permission Issues on unRAID
+### Container Restart Loop or Permission Issues
+
+See the [TROUBLESHOOTING.md](TROUBLESHOOTING.md) guide for detailed solutions to common issues including:
+- GID conflicts with unRAID
+- Permission denied errors
+- Container restart loops
+- Debug diagnostics
+
+### Quick Fixes
+
+#### Permission Issues on unRAID
 - Ensure PUID and PGID match your unRAID user
 - Default values (99/100) should work for most unRAID setups
+- Run the debug script if issues persist: `docker compose -f docker-compose.debug.yml up`
 
-### Out of Memory
+#### Out of Memory
 - Adjust memory limits in docker-compose.yml
 - Reduce the number of clips or video resolution
 
-### Slow Processing
+#### Slow Processing
 - CPU-only processing is slower than GPU
 - Consider processing shorter videos or fewer clips
 
